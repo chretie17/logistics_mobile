@@ -1,7 +1,7 @@
 import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-const BASE_URL = 'http://192.168.1.68:3000/api'; // Use http instead of https
+const BASE_URL = 'http://10.110.7.226:3000/api'; // Use http instead of https
 
 class ApiService {
   private api;

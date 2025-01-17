@@ -1,10 +1,11 @@
 import React, { useEffect, useState, useContext } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, Alert, Modal, SafeAreaView, StyleSheet, StatusBar } from 'react-native';
+import { View, Text, ScrollView, TouchableOpacity, Alert, Modal, SafeAreaView, StyleSheet, StatusBar, Dimensions, Platform } from 'react-native';
 import { AuthContext } from '../context/AuthContext';
 import apiService from '../services/api';
 import MapView, { Marker } from 'react-native-maps';
 import * as Location from 'expo-location';
 import { Ionicons } from '@expo/vector-icons';
+import { BlurView } from 'expo-blur';
 
 type Product = {
   id: string;
@@ -26,6 +27,8 @@ type LocationType = {
   latitude: number;
   longitude: number;
 };
+
+const { width } = Dimensions.get('window');
 
 const DriverDashboard = () => {
   const { user, logout } = useContext(AuthContext);
@@ -56,8 +59,8 @@ const DriverDashboard = () => {
     };
 
     fetchDriverOrders();
-    const intervalId = setInterval(fetchDriverOrders, 30000); // Auto-refresh every 30 seconds
-    return () => clearInterval(intervalId); // Cleanup on component unmount
+    const intervalId = setInterval(fetchDriverOrders, 30000);
+    return () => clearInterval(intervalId);
   }, [user]);
 
   useEffect(() => {
@@ -124,25 +127,53 @@ const DriverDashboard = () => {
     );
   };
 
+  const getStatusColor = (status: string) => {
+    switch (status) {
+      case 'Order Delivered':
+        return '#28a745';
+      case 'In Progress':
+        return '#ffc107';
+      default:
+        return '#007bff';
+    }
+  };
+
   return (
     <SafeAreaView style={styles.safeArea}>
       <StatusBar barStyle="light-content" />
       <View style={styles.header}>
-        <Text style={styles.title}>Your Assigned Orders</Text>
-        <TouchableOpacity onPress={handleLogout} style={styles.logoutButton}>
-          <Ionicons name="log-out-outline" size={24} color="#fff" />
-        </TouchableOpacity>
+        <View style={styles.headerContent}>
+          <Text style={styles.title}>Your Assigned Orders</Text>
+          <TouchableOpacity onPress={handleLogout} style={styles.logoutButton}>
+            <Ionicons name="log-out-outline" size={24} color="#fff" />
+          </TouchableOpacity>
+        </View>
       </View>
-      <ScrollView style={styles.scrollView}>
+      <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
         {orders.length > 0 ? (
           orders.map(order => (
             <View style={styles.card} key={order.id}>
+              <View style={styles.cardHeader}>
+                <View style={styles.orderIdContainer}>
+                  <Text style={styles.orderId}>Order #{order.id}</Text>
+                  <View style={[styles.statusBadge, { backgroundColor: getStatusColor(order.status) }]}>
+                    <Text style={styles.statusText}>{order.status}</Text>
+                  </View>
+                </View>
+              </View>
               <View style={styles.cardContent}>
-                <Text style={styles.orderId}>Order #{order.id}</Text>
-                <Text style={styles.productName}>Product: {order.product.name}</Text>
-                <Text style={styles.text}>Quantity: {order.quantity}</Text>
-                <Text style={styles.text}>Status: {order.status}</Text>
-                <Text style={styles.text}>Delivery Location: {order.deliveryAddress || `${order.deliveryLatitude}, ${order.deliveryLongitude}`}</Text>
+                <View style={styles.productInfo}>
+                  <Ionicons name="cube-outline" size={20} color="#007BFF" />
+                  <Text style={styles.productName}>{order.product.name}</Text>
+                </View>
+                <View style={styles.infoRow}>
+                  <Ionicons name="calculator-outline" size={20} color="#666" />
+                  <Text style={styles.text}>Quantity: {order.quantity}</Text>
+                </View>
+                <View style={styles.infoRow}>
+                  <Ionicons name="location-outline" size={20} color="#666" />
+                  <Text style={styles.text}>{order.deliveryAddress || `${order.deliveryLatitude}, ${order.deliveryLongitude}`}</Text>
+                </View>
                 <View style={styles.actions}>
                   <TouchableOpacity
                     style={styles.viewButton}
@@ -165,7 +196,10 @@ const DriverDashboard = () => {
             </View>
           ))
         ) : (
-          <Text style={styles.noOrders}>No orders assigned to you currently.</Text>
+          <View style={styles.emptyState}>
+            <Ionicons name="cube-outline" size={64} color="#ccc" />
+            <Text style={styles.noOrders}>No orders assigned to you currently.</Text>
+          </View>
         )}
       </ScrollView>
 
@@ -186,9 +220,17 @@ const DriverDashboard = () => {
               }}
             >
               {currentLocation && (
-                <Marker coordinate={currentLocation} title="You" />
+                <Marker
+                  coordinate={currentLocation}
+                  title="Your Location"
+                  pinColor="#007BFF"
+                />
               )}
-              <Marker coordinate={selectedOrderLocation} title="Destination" />
+              <Marker
+                coordinate={selectedOrderLocation}
+                title="Delivery Location"
+                pinColor="#28a745"
+              />
             </MapView>
             <TouchableOpacity style={styles.closeButton} onPress={handleCloseMapDialog}>
               <Text style={styles.closeButtonText}>Close Map</Text>
@@ -203,88 +245,146 @@ const DriverDashboard = () => {
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: '#007BFF',
+    backgroundColor: '#f8f9fa',
   },
   header: {
+    backgroundColor: '#007BFF',
+    paddingTop: Platform.OS === 'android' ? StatusBar.currentHeight : 0,
+    borderBottomRightRadius: 20,
+    borderBottomLeftRadius: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+    elevation: 5,
+  },
+  headerContent: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     padding: 20,
-    backgroundColor: '#0056b3',
-    borderBottomWidth: 1,
-    borderBottomColor: '#fff',
   },
   title: {
     fontSize: 24,
     fontWeight: 'bold',
     color: '#fff',
+    textShadowColor: 'rgba(0, 0, 0, 0.2)',
+    textShadowOffset: { width: 1, height: 1 },
+    textShadowRadius: 3,
   },
   logoutButton: {
     padding: 10,
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    borderRadius: 12,
   },
   scrollView: {
-    backgroundColor: '#f0f2f5',
     flex: 1,
     padding: 16,
   },
   card: {
     backgroundColor: '#ffffff',
-    padding: 16,
-    borderRadius: 10,
+    borderRadius: 15,
     marginBottom: 20,
     shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.1,
-    shadowRadius: 10,
+    shadowRadius: 8,
     elevation: 5,
+    overflow: 'hidden',
+  },
+  cardHeader: {
+    padding: 16,
+    backgroundColor: '#f8f9fa',
+    borderBottomWidth: 1,
+    borderBottomColor: '#eee',
+  },
+  orderIdContainer: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
   },
   cardContent: {
-    flexDirection: 'column',
+    padding: 16,
   },
   orderId: {
-    fontWeight: 'bold',
     fontSize: 18,
-    marginBottom: 8,
-    color: '#333',
+    fontWeight: 'bold',
+    color: '#343a40',
+  },
+  statusBadge: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 20,
+  },
+  statusText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  productInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 12,
   },
   productName: {
     fontSize: 16,
     fontWeight: '600',
-    marginBottom: 4,
     color: '#007BFF',
+    marginLeft: 8,
+  },
+  infoRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 8,
   },
   text: {
     fontSize: 14,
-    color: '#555',
-    marginBottom: 4,
+    color: '#666',
+    marginLeft: 8,
+    flex: 1,
   },
   actions: {
     flexDirection: 'row',
-    marginTop: 15,
+    marginTop: 16,
+    justifyContent: 'space-between',
   },
   viewButton: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#28a745',
-    padding: 10,
-    borderRadius: 5,
-    marginRight: 10,
+    padding: 12,
+    borderRadius: 10,
+    flex: 1,
+    marginRight: 8,
+    justifyContent: 'center',
   },
   deliverButton: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: '#007BFF',
-    padding: 10,
-    borderRadius: 5,
+    padding: 12,
+    borderRadius: 10,
+    flex: 1,
+    marginLeft: 8,
+    justifyContent: 'center',
   },
   buttonText: {
     color: 'white',
-    marginLeft: 5,
+    marginLeft: 8,
     fontSize: 14,
+    fontWeight: '600',
+  },
+  emptyState: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 32,
   },
   noOrders: {
-    textAlign: 'center',
+    marginTop: 16,
     fontSize: 16,
-    color: '#555',
+    color: '#666',
+    textAlign: 'center',
   },
   modalContainer: {
     flex: 1,
@@ -295,12 +395,18 @@ const styles = StyleSheet.create({
   },
   closeButton: {
     backgroundColor: '#007BFF',
-    padding: 15,
+    padding: 16,
     alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: -2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 5,
   },
   closeButtonText: {
     color: '#fff',
     fontSize: 16,
+    fontWeight: '600',
   },
 });
 
