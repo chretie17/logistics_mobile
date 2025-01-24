@@ -1,18 +1,29 @@
-import React, { useEffect, useState, useContext } from 'react';
+// DriverDashboard.tsx
+import React, { useEffect, useState, useContext, useRef } from 'react';
 import { View, Text, ScrollView, TouchableOpacity, Alert, Modal, SafeAreaView, StyleSheet, StatusBar, Dimensions, Platform } from 'react-native';
 import { AuthContext } from '../context/AuthContext';
 import apiService from '../services/api';
-import MapView, { Marker } from 'react-native-maps';
+import MapView, { Marker, Polyline, PROVIDER_GOOGLE } from 'react-native-maps';
 import * as Location from 'expo-location';
 import { Ionicons } from '@expo/vector-icons';
+import { Linking } from 'react-native';
 import { BlurView } from 'expo-blur';
+import * as TaskManager from 'expo-task-manager';
+import { decode } from '@mapbox/polyline';
+import { LocationObject } from 'expo-location';
+import { useNavigation } from '@react-navigation/native';
 
-type Product = {
+
+const LOCATION_TRACKING = 'location-tracking';
+const GOOGLE_MAPS_API_KEY = 'AIzaSyDY0shT-rNkR7RkjMuZpHg58HiL3O6eWyo'; // Replace with your API key
+const { width } = Dimensions.get('window');
+
+interface Product {
   id: string;
   name: string;
-};
+}
 
-type Order = {
+interface Order {
   id: string;
   product: Product;
   quantity: number;
@@ -21,40 +32,56 @@ type Order = {
   deliveryLatitude?: string;
   deliveryLongitude?: string;
   orderDeliveredAt?: string;
-};
+}
 
-type LocationType = {
+interface LocationType {
   latitude: number;
   longitude: number;
-};
+}
 
-const { width } = Dimensions.get('window');
+interface RouteType {
+  coordinates: LocationType[];
+  distance: string;
+  duration: string;
+}
 
-const DriverDashboard = () => {
+TaskManager.defineTask(LOCATION_TRACKING, async ({ data, error }: any) => {
+  if (error) {
+    console.error(error);
+    return;
+  }
+  if (data) {
+    const { locations } = data;
+    const location = locations[0];
+    if (location) {
+      console.log('New location:', location.coords);
+    }
+  }
+});
+
+const DriverDashboard: React.FC = () => {
+  const navigation = useNavigation(); // This is outside the component
   const { user, logout } = useContext(AuthContext);
   const [orders, setOrders] = useState<Order[]>([]);
   const [currentLocation, setCurrentLocation] = useState<LocationType | null>(null);
   const [selectedOrderLocation, setSelectedOrderLocation] = useState<LocationType | null>(null);
   const [modalVisible, setModalVisible] = useState(false);
+  const [route, setRoute] = useState<RouteType | null>(null);
+  const [isTracking, setIsTracking] = useState(false);
+  const mapRef = useRef<MapView>(null);
 
   useEffect(() => {
     const fetchDriverOrders = async () => {
-      if (!user || !user.id) {
-        console.error('No user found or user ID is missing:', user);
-        return;
-      }
-
+      if (!user?.id) return;
+      
       try {
         const ordersData = await apiService.getOrdersByDriver(user.id);
-        if (ordersData && Array.isArray(ordersData.data)) {
+        if (ordersData?.data) {
           setOrders(ordersData.data);
-        } else {
-          console.error('Unexpected data format:', ordersData);
-          Alert.alert('Error', 'Failed to fetch orders.');
         }
       } catch (error) {
-        console.error('Error occurred while fetching driver orders:', error);
-        Alert.alert('Error', 'Failed to fetch orders.');
+        console.error('Error fetching orders:', error);
+        Alert.alert('Error', 'Failed to fetch orders');
       }
     };
 
@@ -64,55 +91,118 @@ const DriverDashboard = () => {
   }, [user]);
 
   useEffect(() => {
-    const getCurrentLocation = async () => {
-      let { status } = await Location.requestForegroundPermissionsAsync();
+    startLocationTracking();
+    return () => {
+      stopLocationTracking();
+    };
+  }, []);
+
+  const startLocationTracking = async () => {
+    try {
+      const { status } = await Location.requestForegroundPermissionsAsync();
       if (status !== 'granted') {
-        Alert.alert('Permission to access location was denied');
+        Alert.alert('Permission denied');
         return;
       }
 
-      let location = await Location.getCurrentPositionAsync({});
+      await Location.requestBackgroundPermissionsAsync();
+
+      await Location.startLocationUpdatesAsync(LOCATION_TRACKING, {
+        accuracy: Location.Accuracy.Balanced,
+        timeInterval: 10000,
+        distanceInterval: 10,
+      });
+
+      setIsTracking(true);
+
+      const location = await Location.getCurrentPositionAsync({});
       setCurrentLocation({
         latitude: location.coords.latitude,
         longitude: location.coords.longitude,
       });
-    };
+    } catch (err) {
+      console.error('Error starting location tracking:', err);
+    }
+  };
 
-    getCurrentLocation();
-  }, []);
+  const stopLocationTracking = async () => {
+    try {
+      await Location.stopLocationUpdatesAsync(LOCATION_TRACKING);
+      setIsTracking(false);
+    } catch (err) {
+      console.error('Error stopping location tracking:', err);
+    }
+  };
+
+  const fetchRoute = async (startLoc: LocationType, endLoc: LocationType) => {
+    try {
+      const response = await fetch(
+        `https://maps.googleapis.com/maps/api/directions/json?origin=${startLoc.latitude},${startLoc.longitude}&destination=${endLoc.latitude},${endLoc.longitude}&key=${GOOGLE_MAPS_API_KEY}`
+      );
+      const data = await response.json();
+
+      if (data.routes[0]) {
+        const points = decode(data.routes[0].overview_polyline.points);
+        const coordinates = points.map((point: number[]) => ({
+          latitude: point[0],
+          longitude: point[1],
+        }));
+
+        setRoute({
+          coordinates,
+          distance: data.routes[0].legs[0].distance.text,
+          duration: data.routes[0].legs[0].duration.text,
+        });
+
+        mapRef.current?.fitToCoordinates(coordinates, {
+          edgePadding: { top: 50, right: 50, bottom: 50, left: 50 },
+          animated: true,
+        });
+      }
+    } catch (error) {
+      console.error('Error fetching route:', error);
+      Alert.alert('Error', 'Failed to fetch route');
+    }
+  };
 
   const handleMarkAsDelivered = async (orderId: string) => {
     try {
       await apiService.markOrderAsDelivered(orderId);
       setOrders(orders.map(order =>
-        order.id === orderId ? { ...order, status: 'Order Delivered', orderDeliveredAt: new Date().toISOString() } : order
+        order.id === orderId 
+          ? { ...order, status: 'Order Delivered', orderDeliveredAt: new Date().toISOString() }
+          : order
       ));
-      Alert.alert('Success', 'Order marked as delivered successfully.');
+      Alert.alert('Success', 'Order marked as delivered');
     } catch (error) {
-      console.error('Error occurred while marking order as delivered:', error);
-      Alert.alert('Error', 'Failed to mark order as delivered.');
+      console.error('Error marking order as delivered:', error);
+      Alert.alert('Error', 'Failed to mark order as delivered');
     }
   };
 
-  const handleOpenMapDialog = (order: Order) => {
+  const handleOpenMapDialog = async (order: Order) => {
     const location = {
       latitude: parseFloat(order.deliveryLatitude || '0'),
       longitude: parseFloat(order.deliveryLongitude || '0'),
     };
 
     if (location.latitude === 0 || location.longitude === 0) {
-      console.error('Location is invalid:', location);
-      Alert.alert('Error', 'Invalid location coordinates.');
+      Alert.alert('Error', 'Invalid location coordinates');
       return;
     }
 
     setSelectedOrderLocation(location);
     setModalVisible(true);
+
+    if (currentLocation) {
+      await fetchRoute(currentLocation, location);
+    }
   };
 
   const handleCloseMapDialog = () => {
     setModalVisible(false);
     setSelectedOrderLocation(null);
+    setRoute(null);
   };
 
   const handleLogout = () => {
@@ -121,20 +211,25 @@ const DriverDashboard = () => {
       'Are you sure you want to logout?',
       [
         { text: 'Cancel', style: 'cancel' },
-        { text: 'Logout', onPress: () => logout() },
+        {
+          text: 'Logout',
+          onPress: () => {
+            logout(); // Call the logout function from AuthContext
+            navigation.reset({
+              index: 0,
+              routes: [{ name: 'Login' }], // Navigate back to Login
+            });
+          },
+        },
       ],
       { cancelable: true }
     );
   };
-
-  const getStatusColor = (status: string) => {
+    const getStatusColor = (status: string): string => {
     switch (status) {
-      case 'Order Delivered':
-        return '#28a745';
-      case 'In Progress':
-        return '#ffc107';
-      default:
-        return '#007bff';
+      case 'Order Delivered': return '#28a745';
+      case 'In Progress': return '#ffc107';
+      default: return '#007bff';
     }
   };
 
@@ -150,58 +245,84 @@ const DriverDashboard = () => {
         </View>
       </View>
       <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
-        {orders.length > 0 ? (
-          orders.map(order => (
-            <View style={styles.card} key={order.id}>
-              <View style={styles.cardHeader}>
-                <View style={styles.orderIdContainer}>
-                  <Text style={styles.orderId}>Order #{order.id}</Text>
-                  <View style={[styles.statusBadge, { backgroundColor: getStatusColor(order.status) }]}>
-                    <Text style={styles.statusText}>{order.status}</Text>
-                  </View>
-                </View>
-              </View>
-              <View style={styles.cardContent}>
-                <View style={styles.productInfo}>
-                  <Ionicons name="cube-outline" size={20} color="#007BFF" />
-                  <Text style={styles.productName}>{order.product.name}</Text>
-                </View>
-                <View style={styles.infoRow}>
-                  <Ionicons name="calculator-outline" size={20} color="#666" />
-                  <Text style={styles.text}>Quantity: {order.quantity}</Text>
-                </View>
-                <View style={styles.infoRow}>
-                  <Ionicons name="location-outline" size={20} color="#666" />
-                  <Text style={styles.text}>{order.deliveryAddress || `${order.deliveryLatitude}, ${order.deliveryLongitude}`}</Text>
-                </View>
-                <View style={styles.actions}>
-                  <TouchableOpacity
-                    style={styles.viewButton}
-                    onPress={() => handleOpenMapDialog(order)}
-                  >
-                    <Ionicons name="map-outline" size={20} color="white" />
-                    <Text style={styles.buttonText}>View Location</Text>
-                  </TouchableOpacity>
-                  {order.status !== 'Order Delivered' && (
-                    <TouchableOpacity
-                      style={styles.deliverButton}
-                      onPress={() => handleMarkAsDelivered(order.id)}
-                    >
-                      <Ionicons name="checkmark-circle-outline" size={20} color="white" />
-                      <Text style={styles.buttonText}>Mark as Delivered</Text>
-                    </TouchableOpacity>
-                  )}
-                </View>
-              </View>
+  {orders.length > 0 ? (
+    orders.map((order) => (
+      <View key={order.id} style={styles.card}>
+        <View style={styles.cardHeader}>
+          <View style={styles.orderIdContainer}>
+            <Text style={styles.orderId}>Order #{order.id}</Text>
+            <View style={[styles.statusBadge, { backgroundColor: getStatusColor(order.status) }]}>
+              <Text style={styles.statusText}>{order.status}</Text>
             </View>
-          ))
-        ) : (
-          <View style={styles.emptyState}>
-            <Ionicons name="cube-outline" size={64} color="#ccc" />
-            <Text style={styles.noOrders}>No orders assigned to you currently.</Text>
           </View>
-        )}
-      </ScrollView>
+        </View>
+        <View style={styles.cardContent}>
+          {/* Product Information */}
+          <View style={styles.productInfo}>
+            <Ionicons name="cube-outline" size={20} color="#007BFF" />
+            <Text style={styles.productName}>{order.product?.name || 'Unknown Product'}</Text>
+          </View>
+          <View style={styles.infoRow}>
+            <Ionicons name="calculator-outline" size={20} color="#666" />
+            <Text style={styles.text}>Quantity: {order.quantity}</Text>
+          </View>
+          {/* User Details */}
+          <View style={styles.infoRow}>
+            <Ionicons name="person-outline" size={20} color="#666" />
+            <Text style={styles.text}>User: {order.user?.name || 'N/A'}</Text>
+          </View>
+          <View style={styles.infoRow}>
+            <Ionicons name="mail-outline" size={20} color="#666" />
+            <Text style={styles.text}>Email: {order.user?.email || 'N/A'}</Text>
+          </View>
+          <View style={styles.infoRow}>
+  <Ionicons name="call-outline" size={20} color="#666" />
+  {order.user?.phone ? (
+    <TouchableOpacity onPress={() => Linking.openURL(`tel:${order.user.phone}`)}>
+      <Text style={[styles.text, { color: '#007BFF', textDecorationLine: 'underline' }]}>
+        {order.user.phone}
+      </Text>
+    </TouchableOpacity>
+  ) : (
+    <Text style={styles.text}>Phone: N/A</Text>
+  )}
+</View>
+
+          <View style={styles.infoRow}>
+            <Ionicons name="location-outline" size={20} color="#666" />
+            <Text style={styles.text}>
+              {order.deliveryAddress || `${order.deliveryLatitude}, ${order.deliveryLongitude}`}
+            </Text>
+          </View>
+          <View style={styles.actions}>
+            <TouchableOpacity
+              style={styles.viewButton}
+              onPress={() => handleOpenMapDialog(order)}
+            >
+              <Ionicons name="map-outline" size={20} color="white" />
+              <Text style={styles.buttonText}>View Location</Text>
+            </TouchableOpacity>
+            {order.status !== 'Order Delivered' && (
+              <TouchableOpacity
+                style={styles.deliverButton}
+                onPress={() => handleMarkAsDelivered(order.id)}
+              >
+                <Ionicons name="checkmark-circle-outline" size={20} color="white" />
+                <Text style={styles.buttonText}>Mark as Delivered</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        </View>
+      </View>
+    ))
+  ) : (
+    <View style={styles.emptyState}>
+      <Ionicons name="cube-outline" size={64} color="#ccc" />
+      <Text style={styles.noOrders}>No orders assigned to you currently.</Text>
+    </View>
+  )}
+</ScrollView>
+
 
       {selectedOrderLocation && (
         <Modal
@@ -211,6 +332,8 @@ const DriverDashboard = () => {
         >
           <View style={styles.modalContainer}>
             <MapView
+              ref={mapRef}
+              provider={PROVIDER_GOOGLE}
               style={styles.map}
               initialRegion={{
                 latitude: selectedOrderLocation.latitude,
@@ -218,20 +341,44 @@ const DriverDashboard = () => {
                 latitudeDelta: 0.005,
                 longitudeDelta: 0.005,
               }}
+              showsUserLocation={true}
+              showsMyLocationButton={true}
+              showsCompass={true}
+              showsTraffic={true}
             >
               {currentLocation && (
                 <Marker
                   coordinate={currentLocation}
                   title="Your Location"
-                  pinColor="#007BFF"
-                />
+                >
+                  <View style={styles.currentLocationMarker}>
+                    <Ionicons name="car" size={24} color="#007BFF" />
+                  </View>
+                </Marker>
               )}
               <Marker
                 coordinate={selectedOrderLocation}
                 title="Delivery Location"
-                pinColor="#28a745"
-              />
+              >
+                <View style={styles.destinationMarker}>
+                  <Ionicons name="location" size={24} color="#28a745" />
+                </View>
+              </Marker>
+              {route && (
+                <Polyline
+                  coordinates={route.coordinates}
+                  strokeWidth={4}
+                  strokeColor="#007BFF"
+                  geodesic
+                />
+              )}
             </MapView>
+            {route && (
+              <View style={styles.routeInfo}>
+                <Text style={styles.routeText}>Distance: {route.distance}</Text>
+                <Text style={styles.routeText}>ETA: {route.duration}</Text>
+              </View>
+            )}
             <TouchableOpacity style={styles.closeButton} onPress={handleCloseMapDialog}>
               <Text style={styles.closeButtonText}>Close Map</Text>
             </TouchableOpacity>
@@ -303,9 +450,6 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
   },
-  cardContent: {
-    padding: 16,
-  },
   orderId: {
     fontSize: 18,
     fontWeight: 'bold',
@@ -320,6 +464,9 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 12,
     fontWeight: '600',
+  },
+  cardContent: {
+    padding: 16,
   },
   productInfo: {
     flexDirection: 'row',
@@ -392,6 +539,51 @@ const styles = StyleSheet.create({
   },
   map: {
     flex: 1,
+  },
+  currentLocationMarker: {
+    padding: 8,
+    backgroundColor: 'white',
+    borderRadius: 20,
+    borderWidth: 2,
+    borderColor: '#007BFF',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+    elevation: 5,
+  },
+  destinationMarker: {
+    padding: 8,
+    backgroundColor: 'white',
+    borderRadius: 20,
+    borderWidth: 2,
+    borderColor: '#28a745',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+    elevation: 5,
+  },
+  routeInfo: {
+    position: 'absolute',
+    top: 20,
+    left: 20,
+    right: 20,
+    backgroundColor: 'rgba(255, 255, 255, 0.9)',
+    borderRadius: 10,
+    padding: 15,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+    elevation: 5,
+  },
+  routeText: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#007BFF',
   },
   closeButton: {
     backgroundColor: '#007BFF',
